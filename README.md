@@ -42,6 +42,9 @@ It looks best on its own dashboard in a **panel** view, especially on a wall tab
 
 ## Configuration
 
+The card has a visual editor. In the dashboard, Add card → Weasley clock, then pick each person, their gem, home/work/school zones, and battery sensors. Zone pickers are converted to the zone id without the `zone.` prefix, which is what the card stores. Corner links and face labels are in the same form. YAML below still works.
+
+
 ```yaml
 type: custom:weasley-clock-card
 title: The Smith Family
@@ -116,7 +119,7 @@ Nothing is looked up while the card runs; only the one-off query goes to the Ove
 ## Notes
 
 - Fonts (Cinzel, IM Fell English) load from Google Fonts, so the tablet needs internet access. Without it the card falls back to Georgia.
-- Plain JavaScript web component, no build step.
+- Plain JavaScript web component, no build step. The visual editor uses Home Assistant's `ha-form` and `ha-selector`, so it stays one file.
 - Written with a lot of help from an LLM.
 - Not affiliated with or endorsed by J.K. Rowling, Warner Bros. or anyone else connected to Harry Potter. It's a fan project.
 
