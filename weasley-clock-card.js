@@ -1,6 +1,6 @@
 // Weasley-style family clock card for Home Assistant.
 // One hand per person; faces follow the clock in Goblet of Fire (Mortal Peril at twelve).
-const WC_VERSION = "1.0.0";
+const WC_VERSION = "1.1.0";
 const WC_FONTS = "https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700&family=Cinzel+Decorative:wght@700&family=IM+Fell+English:ital@0;1&family=IM+Fell+English+SC&display=swap";
 
 // Clockwise from twelve.
@@ -59,6 +59,25 @@ const ago = (ms) => {
 };
 
 class WeasleyClockCard extends HTMLElement {
+  static getConfigElement() {
+    return document.createElement("weasley-clock-card-editor");
+  }
+
+  static getStubConfig(hass) {
+    const entity = Object.keys((hass && hass.states) || {}).find((id) => id.startsWith("person."));
+    const state = entity && hass.states[entity];
+    return {
+      title: "Our Family",
+      units: "mi",
+      people: [{
+        name: (state && state.attributes && state.attributes.friendly_name) || "Someone",
+        entity: entity || "",
+        gem: "sapphire",
+        home_zones: ["home"],
+      }],
+    };
+  }
+
   setConfig(config) {
     if (!config.people || !config.people.length) throw new Error("weasley-clock-card: 'people' is required");
     this._config = {
@@ -372,5 +391,266 @@ nav{position:absolute;top:12px;left:12px;display:flex;gap:6px;z-index:2}
 
 customElements.define("weasley-clock-card", WeasleyClockCard);
 window.customCards = window.customCards || [];
-window.customCards.push({ type: "weasley-clock-card", name: "Weasley clock", description: "A hand for each person, pointing where they are." });
+window.customCards.push({
+  type: "weasley-clock-card",
+  name: "Weasley clock",
+  description: "A hand for each person, pointing where they are.",
+  preview: true,
+  documentationURL: "https://github.com/Nite01007/weasley-clock-card",
+});
 console.info(`%c weasley-clock-card ${WC_VERSION} `, "background:#3b2410;color:#f1dc9f");
+
+
+// ---------- visual editor ----------
+// Zone ids are stored without the "zone." prefix. The entity picker speaks entity_ids.
+const wcZoneToId = (entityId) => String(entityId || "").replace(/^zone\./, "");
+const wcIdToZone = (id) => (!id ? "" : String(id).startsWith("zone.") ? String(id) : `zone.${id}`);
+const wcClean = (value) => {
+  if (Array.isArray(value)) {
+    const next = value.map(wcClean).filter((v) => v !== undefined && v !== "");
+    return next.length ? next : undefined;
+  }
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      const c = wcClean(v);
+      if (c !== undefined && c !== "") out[k] = c;
+    }
+    return Object.keys(out).length ? out : undefined;
+  }
+  return value;
+};
+const wcSame = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+class WeasleyClockCardEditor extends HTMLElement {
+  constructor() {
+    super();
+    this._config = { people: [] };
+    this._hass = null;
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._paintSelectors();
+  }
+
+  setConfig(config) {
+    const next = { people: [], ...config };
+    if (this._root && wcSame(this._config, next)) return;
+    this._config = next;
+    this._render();
+  }
+
+  connectedCallback() {
+    this._render();
+  }
+
+  _fire(next) {
+    const cleaned = wcClean(next) || { people: [] };
+    this._config = { people: [], ...cleaned };
+    const event = new Event("config-changed", { bubbles: true, composed: true });
+    event.detail = { config: this._config };
+    this.dispatchEvent(event);
+  }
+
+  _render() {
+    if (!this._root) {
+      this._root = document.createElement("div");
+      this._root.style.cssText = "display:flex;flex-direction:column;gap:12px;padding:4px 0 16px;";
+      this.appendChild(this._root);
+    }
+    this._root.replaceChildren();
+    if (!this._hass) {
+      this._root.textContent = "Loading editor…";
+      return;
+    }
+    this._root.append(this._formBlock(), this._peopleBlock(), this._linksBlock(), this._labelsBlock());
+  }
+
+  _paintSelectors() {
+    if (!this._hass || !this._root) return;
+    this._root.querySelectorAll("ha-form, ha-selector").forEach((el) => { el.hass = this._hass; });
+  }
+
+  _formBlock() {
+    const form = document.createElement("ha-form");
+    form.hass = this._hass;
+    form.data = {
+      title: this._config.title ?? "Our Family",
+      units: this._config.units ?? "mi",
+      shops_url: this._config.shops_url ?? "",
+      lost_after_hours: this._config.lost_after_hours ?? 4,
+      lost_at_home_after_hours: this._config.lost_at_home_after_hours ?? 12,
+      peril_battery: this._config.peril_battery ?? 10,
+      stopped_pattern: this._config.stopped_pattern ?? "^StatZon",
+    };
+    form.schema = [
+      { name: "title", selector: { text: {} } },
+      { name: "units", selector: { select: { mode: "dropdown", options: [{ value: "mi", label: "Miles" }, { value: "km", label: "Kilometers" }] } } },
+      { name: "shops_url", selector: { text: {} } },
+      {
+        type: "grid", name: "", flatten: true, column_min_width: "140px",
+        schema: [
+          { name: "lost_after_hours", selector: { number: { min: 1, max: 168, mode: "box", unit_of_measurement: "h" } } },
+          { name: "lost_at_home_after_hours", selector: { number: { min: 1, max: 168, mode: "box", unit_of_measurement: "h" } } },
+          { name: "peril_battery", selector: { number: { min: 1, max: 100, mode: "box", unit_of_measurement: "%" } } },
+        ],
+      },
+      { name: "stopped_pattern", selector: { text: {} } },
+    ];
+    form.computeLabel = (schema) => ({
+      title: "Clock title",
+      units: "Distance units",
+      shops_url: "Shops file URL",
+      lost_after_hours: "Lost after (away)",
+      lost_at_home_after_hours: "Lost after (home)",
+      peril_battery: "Mortal Peril below",
+      stopped_pattern: "Stopped-state pattern",
+    })[schema.name];
+    form.computeHelper = (schema) => ({
+      shops_url: "Optional. Example: /local/weasley/shops.json",
+      stopped_pattern: "Regex on the person state. iCloud3 default is ^StatZon",
+      lost_after_hours: "No location report while away",
+      lost_at_home_after_hours: "Phones report less often at home",
+    })[schema.name];
+    form.addEventListener("value-changed", (ev) => {
+      ev.stopPropagation();
+      this._fire({ ...this._config, ...ev.detail.value });
+    });
+    return form;
+  }
+
+  _peopleBlock() {
+    const wrap = document.createElement("div");
+    const heading = document.createElement("div");
+    heading.textContent = "People";
+    heading.style.cssText = "font-weight:500;margin:8px 0 4px;";
+    wrap.appendChild(heading);
+    (this._config.people || []).forEach((person, index) => wrap.appendChild(this._personCard(person, index)));
+    wrap.appendChild(this._button("Add person", () => {
+      const people = [...(this._config.people || []), { name: "", entity: "", gem: "sapphire", home_zones: ["home"] }];
+      this._fire({ ...this._config, people });
+      this._render();
+    }));
+    return wrap;
+  }
+
+  _personCard(person, index) {
+    const card = document.createElement("ha-card");
+    card.style.cssText = "padding:12px;margin:0 0 8px;";
+    const row = document.createElement("div");
+    row.style.cssText = "display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;";
+    const title = document.createElement("div");
+    title.textContent = person.name || `Person ${index + 1}`;
+    title.style.fontWeight = "500";
+    const remove = this._button("Remove", () => {
+      const people = (this._config.people || []).filter((_, i) => i !== index);
+      this._fire({ ...this._config, people });
+      this._render();
+    });
+    row.append(title, remove);
+    card.appendChild(row);
+    card.append(
+      this._selector("Name", { text: {} }, person.name || "", (value) => this._patchPerson(index, { name: value })),
+      this._selector("Person", { entity: { domain: "person" } }, person.entity || "", (value) => {
+        const patch = { entity: value };
+        if (!person.name && value && this._hass.states[value]) patch.name = this._hass.states[value].attributes.friendly_name || value;
+        this._patchPerson(index, patch);
+      }),
+      this._selector("Gem", { select: { mode: "dropdown", options: Object.keys(WC_GEMS).map((value) => ({ value, label: value })) } }, person.gem || "sapphire", (value) => this._patchPerson(index, { gem: value })),
+      this._selector("Home zones", { entity: { domain: "zone", multiple: true } }, (person.home_zones || ["home"]).map(wcIdToZone), (value) => this._patchPerson(index, { home_zones: (value || []).map(wcZoneToId) })),
+      this._selector("Work zones", { entity: { domain: "zone", multiple: true } }, (person.work_zones || []).map(wcIdToZone), (value) => this._patchPerson(index, { work_zones: (value || []).map(wcZoneToId) })),
+      this._selector("School zones", { entity: { domain: "zone", multiple: true } }, (person.school_zones || []).map(wcIdToZone), (value) => this._patchPerson(index, { school_zones: (value || []).map(wcZoneToId) })),
+      this._selector("Battery", { entity: { domain: "sensor", device_class: "battery" } }, person.battery || "", (value) => this._patchPerson(index, { battery: value })),
+      this._selector("Battery status", { entity: { domain: "sensor" } }, person.battery_status || "", (value) => this._patchPerson(index, { battery_status: value })),
+    );
+    return card;
+  }
+
+  _patchPerson(index, partial) {
+    const people = (this._config.people || []).map((p, i) => (i === index ? { ...p, ...partial } : p));
+    this._fire({ ...this._config, people });
+  }
+
+  _linksBlock() {
+    const wrap = document.createElement("div");
+    const heading = document.createElement("div");
+    heading.textContent = "Corner links";
+    heading.style.cssText = "font-weight:500;margin:8px 0 4px;";
+    wrap.appendChild(heading);
+    (this._config.links || []).forEach((link, index) => {
+      const card = document.createElement("ha-card");
+      card.style.cssText = "padding:12px;margin:0 0 8px;";
+      card.append(
+        this._selector("Label", { text: {} }, link.name || "", (value) => {
+          const links = [...(this._config.links || [])];
+          links[index] = { ...links[index], name: value };
+          this._fire({ ...this._config, links });
+        }),
+        this._selector("Path", { text: {} }, link.path || "", (value) => {
+          const links = [...(this._config.links || [])];
+          links[index] = { ...links[index], path: value };
+          this._fire({ ...this._config, links });
+        }),
+        this._button("Remove link", () => {
+          const links = (this._config.links || []).filter((_, i) => i !== index);
+          this._fire({ ...this._config, links });
+          this._render();
+        }),
+      );
+      wrap.appendChild(card);
+    });
+    wrap.appendChild(this._button("Add link", () => {
+      const links = [...(this._config.links || []), { name: "", path: "" }];
+      this._fire({ ...this._config, links });
+      this._render();
+    }));
+    return wrap;
+  }
+
+  _labelsBlock() {
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    summary.textContent = "Face labels";
+    summary.style.cssText = "cursor:pointer;font-weight:500;margin:8px 0;";
+    details.appendChild(summary);
+    const hint = document.createElement("div");
+    hint.textContent = "Leave blank to keep the engraved default.";
+    hint.style.cssText = "opacity:.7;font-size:12px;margin-bottom:8px;";
+    details.appendChild(hint);
+    const labels = this._config.face_labels || {};
+    for (const face of WC_FACES) {
+      details.appendChild(this._selector(face.label, { text: {} }, labels[face.key] || "", (value) => {
+        const face_labels = { ...(this._config.face_labels || {}) };
+        if (value) face_labels[face.key] = value;
+        else delete face_labels[face.key];
+        this._fire({ ...this._config, face_labels });
+      }));
+    }
+    return details;
+  }
+
+  _selector(label, selector, value, onChange) {
+    const el = document.createElement("ha-selector");
+    el.hass = this._hass;
+    el.selector = selector;
+    el.value = value;
+    el.label = label;
+    el.style.display = "block";
+    el.style.marginBottom = "8px";
+    el.addEventListener("value-changed", (ev) => {
+      ev.stopPropagation();
+      onChange(ev.detail.value);
+    });
+    return el;
+  }
+
+  _button(label, onClick) {
+    const btn = document.createElement("mwc-button");
+    btn.textContent = label;
+    btn.addEventListener("click", onClick);
+    return btn;
+  }
+}
+
+customElements.define("weasley-clock-card-editor", WeasleyClockCardEditor);
